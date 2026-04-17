@@ -5,51 +5,80 @@ class TrafficCoordinator:
     def __init__(self, fleet, map_grid):
         self.fleet = fleet
         self.map = map_grid
-
-        # Статусы заданий для роботов:
-        # IDLE (свободен), TO_LOAD (на погрузку),
-        # TO_WORKSTATION (на станцию), TO_DELIVERY (на склад)
         self.robot_states = {r.id: "IDLE" for r in fleet}
 
+        # Расставляем 4 станции зарядки вдоль пустого нижнего прохода
+        self.charging_stations = [
+            (2.0, 2.0),  # Левая (старая)
+            (8.0, 2.0),  # Центрально-левая
+            (14.0, 2.0),  # Центрально-правая
+            (20.0, 2.0)  # Правая
+        ]
+
     def assign_tasks(self):
-        """Раздача первичных заданий свободным роботам"""
         for robot in self.fleet:
-            if self.robot_states[robot.id] == "IDLE":
-                # Распределяем роботов по разным точкам погрузки (по их ID)
+            # --- 1. ПРИОРИТЕТНОЕ ПРЕРЫВАНИЕ: НИЗКИЙ ЗАРЯД ---
+            if robot.battery <= 20.0 and self.robot_states[robot.id] not in ["TO_CHARGE", "CHARGING"]:
+                print(f"[Диспетчер] ВНИМАНИЕ! Робот {robot.id} разряжен! Включает мигалки и ищет розетку.")
+                self.robot_states[robot.id] = "TO_CHARGE"
+
+                # Ищем ближайшую СВОБОДНУЮ станцию зарядки
+                taken_stations = [r.goal for r in self.fleet if self.robot_states[r.id] in ["TO_CHARGE", "CHARGING"]]
+                best_station = self.charging_stations[0]
+                min_dist = float('inf')
+
+                for st in self.charging_stations:
+                    if st not in taken_stations:
+                        dist = math.hypot(robot.x - st[0], robot.y - st[1])
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_station = st
+
+                robot.goal = best_station
+                robot.path = []  # Сбрасываем рабочий маршрут
+                continue
+
+            # --- 2. РАЗДАЧА РАБОТЫ ---
+            if self.robot_states[robot.id] == "IDLE" and robot.battery > 20.0:
                 target_idx = (robot.id - 1) % len(self.map.loading_points)
                 robot.goal = self.map.loading_points[target_idx]
                 self.robot_states[robot.id] = "TO_LOAD"
-                print(f"[Диспетчер] Робот {robot.id} получил задание: ехать на ПОГРУЗКУ.")
 
     def update_tasks(self):
-        """Проверяет, доехал ли робот, и переключает его на следующий этап"""
         for robot in self.fleet:
+            # Симуляция расхода батареи (ограничиваем на 0%, чтобы не уходил в минус)
+            if self.robot_states[robot.id] != "CHARGING":
+                robot.battery -= 0.10
+                if robot.battery < 0: robot.battery = 0.0
+            else:
+                robot.battery += 1.0
+                if robot.battery >= 100.0:
+                    robot.battery = 100.0
+                    self.robot_states[robot.id] = "IDLE"
+                    robot.goal = None
+                continue
+
             if robot.goal is None:
                 continue
 
-            # Проверяем расстояние до цели
             dist = math.hypot(robot.x - robot.goal[0], robot.y - robot.goal[1])
-            if dist < 0.3:  # Доехали (допуск 30 см)
+            if dist < 0.3:
                 current_state = self.robot_states[robot.id]
 
-                if current_state == "TO_LOAD":
-                    # Загрузились -> едем на рабочую станцию
+                if current_state == "TO_CHARGE":
+                    self.robot_states[robot.id] = "CHARGING"
+                    robot.goal = None
+                    robot.path = []
+                elif current_state == "TO_LOAD":
                     target_idx = (robot.id - 1) % len(self.map.workstations)
                     robot.goal = self.map.workstations[target_idx]
                     self.robot_states[robot.id] = "TO_WORKSTATION"
-                    robot.path = []  # Сбрасываем старый путь, чтобы A* построил новый
-                    print(f"[Диспетчер] Робот {robot.id} загружен. Едет на СТАНЦИЮ.")
-
+                    robot.path = []
                 elif current_state == "TO_WORKSTATION":
-                    # Собрали деталь -> едем на склад готовой продукции
                     robot.goal = self.map.delivery_points[0]
                     self.robot_states[robot.id] = "TO_DELIVERY"
                     robot.path = []
-                    print(f"[Диспетчер] Робот {robot.id} обработал деталь. Едет на СКЛАД ГП.")
-
                 elif current_state == "TO_DELIVERY":
-                    # Доставили -> цикл завершен, робот снова свободен
                     self.robot_states[robot.id] = "IDLE"
                     robot.goal = None
                     robot.path = []
-                    print(f"[Диспетчер] Робот {robot.id} завершил цикл доставки!")

@@ -68,12 +68,19 @@ def main():
     coordinator = TrafficCoordinator(fleet, sim_map)
 
     coordinator.assign_tasks()
-
     fig, ax = plt.subplots(figsize=(12, 8))
 
     while True:
         coordinator.update_tasks()
         coordinator.assign_tasks()
+
+        # --- 0. ДИНАМИЧЕСКИЕ ПРИОРИТЕТЫ ---
+        for robot in fleet:
+            robot.priority = robot.id
+            # Если едем на зарядку, вычитаем 100.
+            # Робот 4 превратится в -96, что меньше (важнее) чем 1.
+            if coordinator.robot_states[robot.id] == "TO_CHARGE":
+                robot.priority -= 100
 
         for robot in fleet:
             if robot.goal is None:
@@ -86,26 +93,21 @@ def main():
 
             needs_replanning = not robot.path or robot.plan_timer > 10
 
-            # --- ГЛОБАЛЬНОЕ ПЛАНИРОВАНИЕ (Двухуровневый объезд) ---
+            # --- ГЛОБАЛЬНОЕ ПЛАНИРОВАНИЕ ---
             if needs_replanning:
                 robot.plan_timer = 0
                 temp_blocked = {}
 
                 for other in fleet:
                     if other.id != robot.id:
-                        # 1. ВСЕ роботы считают физические тела других глухой стеной (радиус 0.8м)
-                        # Это заставит старшего объезжать младшего, если тот стоит на пути.
                         block_area(sim_map, temp_blocked, other.x, other.y, 0.8, 100)
 
-                        # 2. ТОЛЬКО младшие роботы уважают МАРШРУТЫ старших (бронь коридоров)
-                        if other.id < robot.id and other.path:
+                        # Бронирование коридоров теперь зависит от ДИНАМИЧЕСКОГО ПРИОРИТЕТА
+                        if other.priority < robot.priority and other.path:
                             for p in other.path[::4]:
                                 block_area(sim_map, temp_blocked, p[0], p[1], 0.5, 100)
 
-                # Очищаем пятачок вокруг себя (чтобы не застрять в своей же зоне блокировки)
                 block_area(sim_map, temp_blocked, robot.x, robot.y, 0.4, 0)
-
-                # Строим путь A*
                 new_path = global_planner.plan((robot.x, robot.y), robot.goal)
 
                 for (ny, nx), old_val in temp_blocked.items():
@@ -129,13 +131,24 @@ def main():
         ax.clear()
         sim_map.draw(ax)
 
+        # Рисуем все 4 станции зарядки явно поверх карты (светло-желтые зоны)
+        for st in coordinator.charging_stations:
+            circle = plt.Circle(st, 0.8, color='gold', alpha=0.4, zorder=1)
+            ax.add_patch(circle)
+
         colors = ['blue', 'orange', 'purple', 'cyan']
         for i, robot in enumerate(fleet):
             robot.draw(ax, color=colors[i])
             if robot.path:
+                # Если едет на зарядку - рисуем жирный красный пунктир маршрута!
+                if coordinator.robot_states[robot.id] == "TO_CHARGE":
+                    path_style = {'color': 'red', 'linewidth': 2.5, 'linestyle': '--', 'alpha': 0.8}
+                else:
+                    path_style = {'color': colors[i], 'linewidth': 1.5, 'linestyle': '-', 'alpha': 0.6}
+
                 path_x = [p[0] for p in robot.path]
                 path_y = [p[1] for p in robot.path]
-                ax.plot(path_x, path_y, color=colors[i], linewidth=1.5, alpha=0.6)
+                ax.plot(path_x, path_y, **path_style)
 
         handles, labels = ax.get_legend_handles_labels()
         by_label = dict(zip(labels, handles))
